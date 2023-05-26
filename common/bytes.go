@@ -75,6 +75,11 @@ func Bytes2Hex(d []byte) string {
 	return hex.EncodeToString(d)
 }
 
+// Bytes2Hex returns the hexadecimal encoding of d.
+func Bytes2HexWithPrefix(d []byte) string {
+	return "0x" + Bytes2Hex(d)
+}
+
 // Hex2Bytes returns the bytes represented by the hexadecimal string str.
 func Hex2Bytes(str string) []byte {
 	h, _ := hex.DecodeString(str)
