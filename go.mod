@@ -1,4 +1,4 @@
-module github.com/zeriontech/go-ethereum
+module github.com/ethereum/go-ethereum
 
 go 1.19
 

@@ -23,6 +23,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"strconv"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -188,11 +189,81 @@ func forEachUnpack(t Type, output []byte, start, size int) (interface{}, error) 
 	return refSlice.Interface(), nil
 }
 
+// forEachUnpack iteratively unpack elements.
+func forEachUnpackAsString(t Type, output []byte, start, size int) (interface{}, error) {
+	if size < 0 {
+		return nil, fmt.Errorf("cannot marshal input to array, size is negative (%d)", size)
+	}
+	if start+32*size > len(output) {
+		return nil, fmt.Errorf("abi: cannot marshal into go array: offset %d would go over slice boundary (len=%d)", len(output), start+32*size)
+	}
+
+	// this value will become our slice or our array, depending on the type
+	var refSlice reflect.Value
+
+	if t.T == SliceTy {
+		// declare our slice
+		refSlice = reflect.MakeSlice(t.GetType(), size, size)
+	} else if t.T == ArrayTy {
+		// declare our array
+		refSlice = reflect.New(t.GetType()).Elem()
+	} else {
+		return nil, errors.New("abi: invalid type in array/slice unpacking stage")
+	}
+
+	// Arrays have packed elements, resulting in longer unpack steps.
+	// Slices have just 32 bytes per element (pointing to the contents).
+	elemSize := getTypeSize(*t.Elem)
+
+	for i, j := start, 0; j < size; i, j = i+elemSize, j+1 {
+		inter, err := toString(i, *t.Elem, output)
+		if err != nil {
+			return nil, err
+		}
+
+		// append the item to our reflect slice
+		refSlice.Index(j).Set(reflect.ValueOf(inter))
+	}
+
+	// return the interface
+	return refSlice.Interface(), nil
+}
+
 func forTupleUnpack(t Type, output []byte) (interface{}, error) {
 	retval := reflect.New(t.GetType()).Elem()
 	virtualArgs := 0
 	for index, elem := range t.TupleElems {
 		marshalledValue, err := toGoType((index+virtualArgs)*32, *elem, output)
+		if err != nil {
+			return nil, err
+		}
+		if elem.T == ArrayTy && !isDynamicType(*elem) {
+			// If we have a static array, like [3]uint256, these are coded as
+			// just like uint256,uint256,uint256.
+			// This means that we need to add two 'virtual' arguments when
+			// we count the index from now on.
+			//
+			// Array values nested multiple levels deep are also encoded inline:
+			// [2][3]uint256: uint256,uint256,uint256,uint256,uint256,uint256
+			//
+			// Calculate the full array size to get the correct offset for the next argument.
+			// Decrement it by 1, as the normal index increment is still applied.
+			virtualArgs += getTypeSize(*elem)/32 - 1
+		} else if elem.T == TupleTy && !isDynamicType(*elem) {
+			// If we have a static tuple, like (uint256, bool, uint256), these are
+			// coded as just like uint256,bool,uint256
+			virtualArgs += getTypeSize(*elem)/32 - 1
+		}
+		retval.Field(index).Set(reflect.ValueOf(marshalledValue))
+	}
+	return retval.Interface(), nil
+}
+
+func forTupleUnpackAsString(t Type, output []byte) (interface{}, error) {
+	retval := reflect.New(t.GetType()).Elem()
+	virtualArgs := 0
+	for index, elem := range t.TupleElems {
+		marshalledValue, err := toString((index+virtualArgs)*32, *elem, output)
 		if err != nil {
 			return nil, err
 		}
@@ -278,6 +349,85 @@ func toGoType(index int, t Type, output []byte) (interface{}, error) {
 		return ReadFixedBytes(t, returnOutput)
 	case FunctionTy:
 		return readFunctionType(t, returnOutput)
+	default:
+		return nil, fmt.Errorf("abi: unknown type %v", t.T)
+	}
+}
+
+// toString parses the output bytes and recursively assigns the value of these bytes into string.
+func toString(index int, t Type, output []byte) (interface{}, error) {
+	if index+32 > len(output) {
+		return nil, fmt.Errorf("abi: cannot marshal in to go type: length insufficient %d require %d", len(output), index+32)
+	}
+
+	var (
+		returnOutput  []byte
+		begin, length int
+		err           error
+	)
+
+	// if we require a length prefix, find the beginning word and size returned.
+	if t.requiresLengthPrefix() {
+		begin, length, err = lengthPrefixPointsTo(index, output)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		returnOutput = output[index : index+32]
+	}
+
+	switch t.T {
+	case TupleTy:
+		if isDynamicType(t) {
+			begin, err := tuplePointsTo(index, output)
+			if err != nil {
+				return nil, err
+			}
+			return forTupleUnpackAsString(t, output[begin:])
+		}
+		return forTupleUnpackAsString(t, output[index:])
+	case SliceTy:
+		return forEachUnpackAsString(t, output[begin:], 0, length)
+	case ArrayTy:
+		if isDynamicType(*t.Elem) {
+			offset := binary.BigEndian.Uint64(returnOutput[len(returnOutput)-8:])
+			if offset > uint64(len(output)) {
+				return nil, fmt.Errorf("abi: toGoType offset greater than output length: offset: %d, len(output): %d", offset, len(output))
+			}
+			return forEachUnpackAsString(t, output[offset:], 0, t.Size)
+		}
+		return forEachUnpackAsString(t, output[index:], 0, t.Size)
+	case StringTy: // variable arrays are written at the end of the return bytes
+		return string(output[begin : begin+length]), nil
+	case IntTy, UintTy:
+		return ReadInteger(t, returnOutput)
+	case BoolTy:
+		var b bool
+		b, err = readBool(returnOutput)
+		if err != nil {
+			return nil, fmt.Errorf("abi: cannot convert value as bool: %v", returnOutput)
+		}
+		return strconv.FormatBool(b), nil
+	case AddressTy:
+		return string(common.BytesToAddress(returnOutput).Bytes()), nil
+	case HashTy:
+		return string(common.BytesToHash(returnOutput).Bytes()), nil
+	case BytesTy:
+		return string(output[begin : begin+length]), nil
+	case FixedBytesTy:
+		var b interface{}
+		b, err = ReadFixedBytes(t, returnOutput)
+		if err != nil {
+			return nil, fmt.Errorf("abi: cannot convert value as fixed bytes array: %v", returnOutput)
+		}
+		return string(b.([]byte)), nil
+	case FunctionTy:
+		var f interface{}
+		f, err = ReadFixedBytes(t, returnOutput)
+		if err != nil {
+			return nil, fmt.Errorf("abi: cannot convert value as function: %v", returnOutput)
+		}
+		return string(f.([]byte)), nil
 	default:
 		return nil, fmt.Errorf("abi: unknown type %v", t.T)
 	}
