@@ -18,6 +18,7 @@ package abi
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -400,7 +401,12 @@ func toString(index int, t Type, output []byte) (interface{}, error) {
 	case StringTy: // variable arrays are written at the end of the return bytes
 		return string(output[begin : begin+length]), nil
 	case IntTy, UintTy:
-		return ReadInteger(t, returnOutput)
+		var n interface{}
+		n, err = ReadInteger(t, returnOutput)
+		if err != nil {
+			return nil, fmt.Errorf("abi: cannot convert value as integer: %v", returnOutput)
+		}
+		return fmt.Sprintf("%d", n), nil
 	case BoolTy:
 		var b bool
 		b, err = readBool(returnOutput)
@@ -409,25 +415,25 @@ func toString(index int, t Type, output []byte) (interface{}, error) {
 		}
 		return strconv.FormatBool(b), nil
 	case AddressTy:
-		return string(common.BytesToAddress(returnOutput).Bytes()), nil
+		return hex.EncodeToString(common.BytesToAddress(returnOutput).Bytes()), nil
 	case HashTy:
-		return string(common.BytesToHash(returnOutput).Bytes()), nil
+		return hex.EncodeToString(common.BytesToHash(returnOutput).Bytes()), nil
 	case BytesTy:
-		return string(output[begin : begin+length]), nil
+		return hex.EncodeToString(output[begin : begin+length]), nil
 	case FixedBytesTy:
 		var b interface{}
 		b, err = ReadFixedBytes(t, returnOutput)
 		if err != nil {
 			return nil, fmt.Errorf("abi: cannot convert value as fixed bytes array: %v", returnOutput)
 		}
-		return string(b.([]byte)), nil
+		return hex.EncodeToString(b.([]byte)), nil
 	case FunctionTy:
 		var f interface{}
 		f, err = ReadFixedBytes(t, returnOutput)
 		if err != nil {
 			return nil, fmt.Errorf("abi: cannot convert value as function: %v", returnOutput)
 		}
-		return string(f.([]byte)), nil
+		return hex.EncodeToString(f.([]byte)), nil
 	default:
 		return nil, fmt.Errorf("abi: unknown type %v", t.T)
 	}
