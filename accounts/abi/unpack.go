@@ -18,7 +18,6 @@ package abi
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -415,25 +414,25 @@ func toString(index int, t Type, output []byte) (interface{}, error) {
 		}
 		return strconv.FormatBool(b), nil
 	case AddressTy:
-		return hex.EncodeToString(common.BytesToAddress(returnOutput).Bytes()), nil
+		return common.Bytes2HexWithPrefix(common.BytesToAddress(returnOutput).Bytes()), nil
 	case HashTy:
-		return hex.EncodeToString(common.BytesToHash(returnOutput).Bytes()), nil
+		return common.Bytes2HexWithPrefix(common.BytesToHash(returnOutput).Bytes()), nil
 	case BytesTy:
-		return hex.EncodeToString(output[begin : begin+length]), nil
+		return common.Bytes2HexWithPrefix(output[begin : begin+length]), nil
 	case FixedBytesTy:
 		var b interface{}
 		b, err = ReadFixedBytes(t, returnOutput)
 		if err != nil {
 			return nil, fmt.Errorf("abi: cannot convert value as fixed bytes array: %v", returnOutput)
 		}
-		return hex.EncodeToString(b.([]byte)), nil
+		return common.Bytes2HexWithPrefix(b.([]byte)), nil
 	case FunctionTy:
 		var f interface{}
 		f, err = ReadFixedBytes(t, returnOutput)
 		if err != nil {
 			return nil, fmt.Errorf("abi: cannot convert value as function: %v", returnOutput)
 		}
-		return hex.EncodeToString(f.([]byte)), nil
+		return common.Bytes2HexWithPrefix(f.([]byte)), nil
 	default:
 		return nil, fmt.Errorf("abi: unknown type %v", t.T)
 	}
