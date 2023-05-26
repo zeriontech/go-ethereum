@@ -226,6 +226,166 @@ func NewType(t string, internalType string, components []ArgumentMarshaling) (ty
 	return
 }
 
+// NewTypeAsString creates a new reflection type of abi type given in t.
+func NewTypeAsString(t string, internalType string, components []ArgumentMarshaling) (typ Type, err error) {
+	// check that array brackets are equal if they exist
+	if strings.Count(t, "[") != strings.Count(t, "]") {
+		return Type{}, errors.New("invalid arg type in abi")
+	}
+	typ.stringKind = t
+
+	// if there are brackets, get ready to go into slice/array mode and
+	// recursively create the type
+	if strings.Count(t, "[") != 0 {
+		// Note internalType can be empty here.
+		subInternal := internalType
+		if i := strings.LastIndex(internalType, "["); i != -1 {
+			subInternal = subInternal[:i]
+		}
+		// recursively embed the type
+		i := strings.LastIndex(t, "[")
+		embeddedType, err := NewTypeAsString(t[:i], subInternal, components)
+		if err != nil {
+			return Type{}, err
+		}
+		// grab the last cell and create a type from there
+		sliced := t[i:]
+		// grab the slice size with regexp
+		re := regexp.MustCompile("[0-9]+")
+		intz := re.FindAllString(sliced, -1)
+
+		if len(intz) == 0 {
+			// is a slice
+			typ.T = SliceTy
+			typ.Elem = &embeddedType
+			typ.stringKind = embeddedType.stringKind + sliced
+		} else if len(intz) == 1 {
+			// is an array
+			typ.T = ArrayTy
+			typ.Elem = &embeddedType
+			typ.Size, err = strconv.Atoi(intz[0])
+			if err != nil {
+				return Type{}, fmt.Errorf("abi: error parsing variable size: %v", err)
+			}
+			typ.stringKind = embeddedType.stringKind + sliced
+		} else {
+			return Type{}, errors.New("invalid formatting of array type")
+		}
+		return typ, err
+	}
+	// parse the type and size of the abi-type.
+	matches := typeRegex.FindAllStringSubmatch(t, -1)
+	if len(matches) == 0 {
+		return Type{}, fmt.Errorf("invalid type '%v'", t)
+	}
+	parsedType := matches[0]
+
+	// varSize is the size of the variable
+	var varSize int
+	if len(parsedType[3]) > 0 {
+		var err error
+		varSize, err = strconv.Atoi(parsedType[2])
+		if err != nil {
+			return Type{}, fmt.Errorf("abi: error parsing variable size: %v", err)
+		}
+	} else {
+		if parsedType[0] == "uint" || parsedType[0] == "int" {
+			// this should fail because it means that there's something wrong with
+			// the abi type (the compiler should always format it to the size...always)
+			return Type{}, fmt.Errorf("unsupported arg type: %s", t)
+		}
+	}
+	// varType is the parsed abi type
+	switch varType := parsedType[1]; varType {
+	case "int":
+		typ.Size = varSize
+		typ.T = IntTy
+	case "uint":
+		typ.Size = varSize
+		typ.T = UintTy
+	case "bool":
+		typ.T = BoolTy
+	case "address":
+		typ.Size = 20
+		typ.T = AddressTy
+	case "string":
+		typ.T = StringTy
+	case "bytes":
+		if varSize == 0 {
+			typ.T = BytesTy
+		} else {
+			if varSize > 32 {
+				return Type{}, fmt.Errorf("unsupported arg type: %s", t)
+			}
+			typ.T = FixedBytesTy
+			typ.Size = varSize
+		}
+	case "tuple":
+		var (
+			fields     []reflect.StructField
+			elems      []*Type
+			names      []string
+			expression string // canonical parameter expression
+			used       = make(map[string]bool)
+		)
+		expression += "("
+		for idx, c := range components {
+			cType, err := NewTypeAsString(c.Type, c.InternalType, c.Components)
+			if err != nil {
+				return Type{}, err
+			}
+			name := ToCamelCase(c.Name)
+			if name == "" {
+				return Type{}, errors.New("abi: purely anonymous or underscored field is not supported")
+			}
+			fieldName := ResolveNameConflict(name, func(s string) bool { return used[s] })
+			if err != nil {
+				return Type{}, err
+			}
+			used[fieldName] = true
+			if !isValidFieldName(fieldName) {
+				return Type{}, fmt.Errorf("field %d has invalid name", idx)
+			}
+			fields = append(fields, reflect.StructField{
+				Name: fieldName, // reflect.StructOf will panic for any exported field.
+				Type: cType.GetTypeAsString(),
+				Tag:  reflect.StructTag("json:\"" + c.Name + "\""),
+			})
+			elems = append(elems, &cType)
+			names = append(names, c.Name)
+			expression += cType.stringKind
+			if idx != len(components)-1 {
+				expression += ","
+			}
+		}
+		expression += ")"
+
+		typ.TupleType = reflect.StructOf(fields)
+		typ.TupleElems = elems
+		typ.TupleRawNames = names
+		typ.T = TupleTy
+		typ.stringKind = expression
+
+		const structPrefix = "struct "
+		// After solidity 0.5.10, a new field of abi "internalType"
+		// is introduced. From that we can obtain the struct name
+		// user defined in the source code.
+		if internalType != "" && strings.HasPrefix(internalType, structPrefix) {
+			// Foo.Bar type definition is not allowed in golang,
+			// convert the format to FooBar
+			typ.TupleRawName = strings.ReplaceAll(internalType[len(structPrefix):], ".", "")
+		}
+
+	case "function":
+		typ.T = FunctionTy
+		typ.Size = 24
+	default:
+		return Type{}, fmt.Errorf("unsupported arg type: %s", t)
+	}
+
+	return
+}
+
 // GetType returns the reflection type of the ABI type.
 func (t Type) GetType() reflect.Type {
 	switch t.T {
@@ -257,6 +417,42 @@ func (t Type) GetType() reflect.Type {
 		return reflect.ArrayOf(32, reflect.TypeOf(byte(0)))
 	case FunctionTy:
 		return reflect.ArrayOf(24, reflect.TypeOf(byte(0)))
+	default:
+		panic("Invalid type")
+	}
+}
+
+// GetTypeAsString returns the reflection type of the ABI type (always string).
+func (t Type) GetTypeAsString() reflect.Type {
+	switch t.T {
+	case IntTy:
+		return reflect.TypeOf("")
+	case UintTy:
+		return reflect.TypeOf("")
+	case BoolTy:
+		return reflect.TypeOf("")
+	case StringTy:
+		return reflect.TypeOf("")
+	case SliceTy:
+		return reflect.SliceOf(t.Elem.GetTypeAsString())
+	case ArrayTy:
+		return reflect.ArrayOf(t.Size, t.Elem.GetTypeAsString())
+	case TupleTy:
+		return t.TupleType
+	case AddressTy:
+		return reflect.TypeOf("")
+	case FixedBytesTy:
+		return reflect.TypeOf("")
+	case BytesTy:
+		return reflect.TypeOf("")
+	case HashTy:
+		// hashtype currently not used
+		return reflect.TypeOf("")
+	case FixedPointTy:
+		// fixedpoint type currently not used
+		return reflect.TypeOf("")
+	case FunctionTy:
+		return reflect.TypeOf("")
 	default:
 		panic("Invalid type")
 	}

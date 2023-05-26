@@ -32,7 +32,7 @@ var (
 	// MaxUint256 is the maximum value that can be represented by a uint256.
 	MaxUint256 = new(big.Int).Sub(new(big.Int).Lsh(common.Big1, 256), common.Big1)
 	// MaxInt256 is the maximum value that can be represented by a int256.
-	MaxInt256 = new(big.Int).Sub(new(big.Int).Lsh(common.Big1, 255), common.Big1)
+	//MaxInt256 = new(big.Int).Sub(new(big.Int).Lsh(common.Big1, 255), common.Big1)
 )
 
 // ReadInteger reads the integer based on its kind and returns the appropriate value.
@@ -203,10 +203,10 @@ func forEachUnpackAsString(t Type, output []byte, start, size int) (interface{},
 
 	if t.T == SliceTy {
 		// declare our slice
-		refSlice = reflect.MakeSlice(t.GetType(), size, size)
+		refSlice = reflect.MakeSlice(t.GetTypeAsString(), size, size)
 	} else if t.T == ArrayTy {
 		// declare our array
-		refSlice = reflect.New(t.GetType()).Elem()
+		refSlice = reflect.New(t.GetTypeAsString()).Elem()
 	} else {
 		return nil, errors.New("abi: invalid type in array/slice unpacking stage")
 	}
@@ -260,7 +260,7 @@ func forTupleUnpack(t Type, output []byte) (interface{}, error) {
 }
 
 func forTupleUnpackAsString(t Type, output []byte) (interface{}, error) {
-	retval := reflect.New(t.GetType()).Elem()
+	retval := reflect.New(t.GetTypeAsString()).Elem()
 	virtualArgs := 0
 	for index, elem := range t.TupleElems {
 		marshalledValue, err := toString((index+virtualArgs)*32, *elem, output)
