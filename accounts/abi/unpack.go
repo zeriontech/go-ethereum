@@ -425,14 +425,14 @@ func toString(index int, t Type, output []byte) (interface{}, error) {
 		if err != nil {
 			return nil, fmt.Errorf("abi: cannot convert value as fixed bytes array: %v", returnOutput)
 		}
-		return common.Bytes2HexWithPrefix(b.([]byte)), nil
+		return common.Bytes2HexWithPrefix(fixedBytesToSlice(b)), nil
 	case FunctionTy:
-		var f interface{}
-		f, err = ReadFixedBytes(t, returnOutput)
+		var b interface{}
+		b, err = ReadFixedBytes(t, returnOutput)
 		if err != nil {
 			return nil, fmt.Errorf("abi: cannot convert value as function: %v", returnOutput)
 		}
-		return common.Bytes2HexWithPrefix(f.([]byte)), nil
+		return common.Bytes2HexWithPrefix(fixedBytesToSlice(b)), nil
 	default:
 		return nil, fmt.Errorf("abi: unknown type %v", t.T)
 	}
@@ -480,4 +480,15 @@ func tuplePointsTo(index int, output []byte) (start int, err error) {
 		return 0, fmt.Errorf("abi offset larger than int64: %v", offset)
 	}
 	return int(offset.Uint64()), nil
+}
+
+func fixedBytesToSlice(b interface{}) (res []byte) {
+	arr := reflect.ValueOf(b)
+	length := arr.Len()
+	res = make([]byte, length)
+	for i := 0; i < length; i++ {
+		res[i] = arr.Index(i).Interface().(byte)
+	}
+
+	return res
 }
