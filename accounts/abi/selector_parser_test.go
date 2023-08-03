@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +30,11 @@ func TestParseSelector(t *testing.T) {
 		for i, typeOrComponents := range types {
 			name := fmt.Sprintf("name%d", i)
 			if typeName, ok := typeOrComponents.(string); ok {
+				names := strings.Split(typeName, " ")
+				if len(names) > 1 {
+					name = names[0]
+					typeName = typeName[len(name)+1:]
+				}
 				result = append(result, ArgumentMarshaling{name, typeName, typeName, nil, false})
 			} else if components, ok := typeOrComponents.([]ArgumentMarshaling); ok {
 				result = append(result, ArgumentMarshaling{name, "tuple", "tuple", components, false})
@@ -59,6 +65,10 @@ func TestParseSelector(t *testing.T) {
 			mkType([][]ArgumentMarshaling{mkType("uint256", "uint256")}, "bytes32[]")},
 		{"singleArrayNestWithArrayAndArray((uint256[],address[2],uint8[4][][5])[],bytes32[])", "singleArrayNestWithArrayAndArray",
 			mkType([][]ArgumentMarshaling{mkType("uint256[]", "address[2]", "uint8[4][][5]")}, "bytes32[]")},
+		{"transfer(to address,amount uint256)", "transfer",
+			mkType("to address", "amount uint256")},
+		{"execute(((a address,c uint256,b uint8),(d uint8,e bytes)),(address,uint256),(uint8,(uint256,address),(uint256,address),address,address,bytes),(uint256,bytes),(uint256,bytes))", "execute",
+			mkType(mkType(mkType("a address", "c uint256", "b uint8"), mkType("d uint8", "e bytes")), mkType("address", "uint256"), mkType("uint8", mkType("uint256", "address"), mkType("uint256", "address"), "address", "address", "bytes"), mkType("uint256", "bytes"), mkType("uint256", "bytes"))},
 	}
 	for i, tt := range tests {
 		selector, err := ParseSelector(tt.input)
