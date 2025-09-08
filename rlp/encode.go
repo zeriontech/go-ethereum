@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"math/bits"
 	"reflect"
 
 	"github.com/ethereum/go-ethereum/rlp/internal/rlpstruct"
@@ -133,7 +134,7 @@ func puthead(buf []byte, smalltag, largetag byte, size uint64) int {
 	return sizesize + 1
 }
 
-var encoderInterface = reflect.TypeOf(new(Encoder)).Elem()
+var encoderInterface = reflect.TypeFor[Encoder]()
 
 // makeWriter creates a writer function for the given type.
 func makeWriter(typ reflect.Type, ts rlpstruct.Tags) (writer, error) {
@@ -141,17 +142,17 @@ func makeWriter(typ reflect.Type, ts rlpstruct.Tags) (writer, error) {
 	switch {
 	case typ == rawValueType:
 		return writeRawValue, nil
-	case typ.AssignableTo(reflect.PtrTo(bigInt)):
+	case typ.AssignableTo(reflect.PointerTo(bigInt)):
 		return writeBigIntPtr, nil
 	case typ.AssignableTo(bigInt):
 		return writeBigIntNoPtr, nil
-	case typ == reflect.PtrTo(u256Int):
+	case typ == reflect.PointerTo(u256Int):
 		return writeU256IntPtr, nil
 	case typ == u256Int:
 		return writeU256IntNoPtr, nil
 	case kind == reflect.Ptr:
 		return makePtrWriter(typ, ts)
-	case reflect.PtrTo(typ).Implements(encoderInterface):
+	case reflect.PointerTo(typ).Implements(encoderInterface):
 		return makeEncoderWriter(typ), nil
 	case isUint(kind):
 		return writeUint, nil
@@ -239,7 +240,6 @@ func makeByteArrayWriter(typ reflect.Type) writer {
 	case 1:
 		return writeLengthOneByteArray
 	default:
-		length := typ.Len()
 		return func(val reflect.Value, w *encBuffer) error {
 			if !val.CanAddr() {
 				// Getting the byte slice of val requires it to be addressable. Make it
@@ -248,7 +248,7 @@ func makeByteArrayWriter(typ reflect.Type) writer {
 				copy.Set(val)
 				val = copy
 			}
-			slice := byteArrayBytes(val, length)
+			slice := val.Bytes()
 			w.encodeStringHeader(len(slice))
 			w.str = append(w.str, slice...)
 			return nil
@@ -419,7 +419,7 @@ func makeEncoderWriter(typ reflect.Type) writer {
 			// package json simply doesn't call MarshalJSON for this case, but encodes the
 			// value as if it didn't implement the interface. We don't want to handle it that
 			// way.
-			return fmt.Errorf("rlp: unadressable value of type %v, EncodeRLP is pointer method", val.Type())
+			return fmt.Errorf("rlp: unaddressable value of type %v, EncodeRLP is pointer method", val.Type())
 		}
 		return val.Addr().Interface().(Encoder).EncodeRLP(w)
 	}
@@ -487,9 +487,8 @@ func putint(b []byte, i uint64) (size int) {
 
 // intsize computes the minimum number of bytes required to store i.
 func intsize(i uint64) (size int) {
-	for size = 1; ; size++ {
-		if i >>= 8; i == 0 {
-			return size
-		}
+	if i == 0 {
+		return 1
 	}
+	return (bits.Len64(i) + 7) / 8
 }

@@ -18,6 +18,7 @@ package state
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -27,9 +28,11 @@ import (
 )
 
 // nodeIterator is an iterator to traverse the entire state trie post-order,
-// including all of the contract code and contract state tries.
+// including all of the contract code and contract state tries. Preimage is
+// required in order to resolve the contract address.
 type nodeIterator struct {
 	state *StateDB // State being iterated
+	tr    Trie     // Primary account trie for traversal
 
 	stateIt trie.NodeIterator // Primary iterator for the global state trie
 	dataIt  trie.NodeIterator // Secondary iterator for the data trie of a contract
@@ -44,7 +47,7 @@ type nodeIterator struct {
 	Error error // Failure set in case of an internal error in the iterator
 }
 
-// newNodeIterator creates an post-order state node iterator.
+// newNodeIterator creates a post-order state node iterator.
 func newNodeIterator(state *StateDB) *nodeIterator {
 	return &nodeIterator{
 		state: state,
@@ -73,9 +76,20 @@ func (it *nodeIterator) step() error {
 	if it.state == nil {
 		return nil
 	}
+	if it.tr == nil {
+		tr, err := it.state.db.OpenTrie(it.state.originalRoot)
+		if err != nil {
+			return err
+		}
+		it.tr = tr
+	}
 	// Initialize the iterator if we've just started
 	if it.stateIt == nil {
-		it.stateIt = it.state.trie.NodeIterator(nil)
+		stateIt, err := it.tr.NodeIterator(nil)
+		if err != nil {
+			return err
+		}
+		it.stateIt = stateIt
 	}
 	// If we had data nodes previously, we surely have at least state nodes
 	if it.dataIt != nil {
@@ -106,23 +120,36 @@ func (it *nodeIterator) step() error {
 	}
 	// Otherwise we've reached an account node, initiate data iteration
 	var account types.StateAccount
-	if err := rlp.Decode(bytes.NewReader(it.stateIt.LeafBlob()), &account); err != nil {
+	if err := rlp.DecodeBytes(it.stateIt.LeafBlob(), &account); err != nil {
 		return err
 	}
-	dataTrie, err := it.state.db.OpenStorageTrie(it.state.originalRoot, common.BytesToHash(it.stateIt.LeafKey()), account.Root)
+	// Lookup the preimage of account hash
+	preimage := it.tr.GetKey(it.stateIt.LeafKey())
+	if preimage == nil {
+		return errors.New("account address is not available")
+	}
+	address := common.BytesToAddress(preimage)
+
+	// Traverse the storage slots belong to the account
+	dataTrie, err := it.state.db.OpenStorageTrie(it.state.originalRoot, address, account.Root, it.tr)
 	if err != nil {
 		return err
 	}
-	it.dataIt = dataTrie.NodeIterator(nil)
+	it.dataIt, err = dataTrie.NodeIterator(nil)
+	if err != nil {
+		return err
+	}
 	if !it.dataIt.Next(true) {
 		it.dataIt = nil
 	}
 	if !bytes.Equal(account.CodeHash, types.EmptyCodeHash.Bytes()) {
 		it.codeHash = common.BytesToHash(account.CodeHash)
-		addrHash := common.BytesToHash(it.stateIt.LeafKey())
-		it.code, err = it.state.db.ContractCode(addrHash, common.BytesToHash(account.CodeHash))
+		it.code, err = it.state.reader.Code(address, common.BytesToHash(account.CodeHash))
 		if err != nil {
 			return fmt.Errorf("code %x: %v", account.CodeHash, err)
+		}
+		if len(it.code) == 0 {
+			return fmt.Errorf("code is not found: %x", account.CodeHash)
 		}
 	}
 	it.accountHash = it.stateIt.Parent()

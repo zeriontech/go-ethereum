@@ -1,18 +1,18 @@
 // Copyright 2022 The go-ethereum Authors
-// This file is part of the go-ethereum library.
+// This file is part of go-ethereum.
 //
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
+// go-ethereum is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
 //
-// The go-ethereum library is distributed in the hope that it will be useful,
+// go-ethereum is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
+// GNU General Public License for more details.
 //
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
+// You should have received a copy of the GNU General Public License
+// along with go-ethereum. If not, see <http://www.gnu.org/licenses/>.
 
 package main
 
@@ -48,7 +48,7 @@ func TestAttachWithHeaders(t *testing.T) {
 	// This is fixed in a follow-up PR.
 }
 
-// TestAttachWithHeaders tests that 'geth db --remotedb' with custom headers works, i.e
+// TestRemoteDbWithHeaders tests that 'geth db --remotedb' with custom headers works, i.e
 // that custom headers are forwarded to the target.
 func TestRemoteDbWithHeaders(t *testing.T) {
 	t.Parallel()
@@ -61,7 +61,7 @@ func TestRemoteDbWithHeaders(t *testing.T) {
 }
 
 func testReceiveHeaders(t *testing.T, ln net.Listener, gethArgs ...string) {
-	var ok uint32
+	var ok atomic.Uint32
 	server := &http.Server{
 		Addr: "localhost:0",
 		Handler: &testHandler{func(w http.ResponseWriter, r *http.Request) {
@@ -72,12 +72,12 @@ func testReceiveHeaders(t *testing.T, ln net.Listener, gethArgs ...string) {
 			if have, want := r.Header.Get("second"), "two"; have != want {
 				t.Fatalf("missing header, have %v want %v", have, want)
 			}
-			atomic.StoreUint32(&ok, 1)
+			ok.Store(1)
 		}}}
 	go server.Serve(ln)
 	defer server.Close()
 	runGeth(t, gethArgs...).WaitExit()
-	if atomic.LoadUint32(&ok) != 1 {
+	if ok.Load() != 1 {
 		t.Fatal("Test fail, expected invocation to succeed")
 	}
 }

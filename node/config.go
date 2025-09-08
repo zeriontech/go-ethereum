@@ -19,6 +19,7 @@ package node
 import (
 	"crypto/ecdsa"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -82,7 +83,7 @@ type Config struct {
 	// scrypt KDF at the expense of security.
 	UseLightweightKDF bool `toml:",omitempty"`
 
-	// InsecureUnlockAllowed allows user to unlock accounts in unsafe http environment.
+	// InsecureUnlockAllowed is a deprecated option to  allow users to accounts in unsafe http environment.
 	InsecureUnlockAllowed bool `toml:",omitempty"`
 
 	// NoUSB disables hardware wallet monitoring and connectivity.
@@ -197,6 +198,12 @@ type Config struct {
 	// AllowUnprotectedTxs allows non EIP-155 protected transactions to be send over RPC.
 	AllowUnprotectedTxs bool `toml:",omitempty"`
 
+	// BatchRequestLimit is the maximum number of requests in a batch.
+	BatchRequestLimit int `toml:",omitempty"`
+
+	// BatchResponseMaxSize is the maximum number of bytes returned from a batched rpc call.
+	BatchResponseMaxSize int `toml:",omitempty"`
+
 	// JWTSecret is the path to the hex-encoded jwt secret.
 	JWTSecret string `toml:",omitempty"`
 
@@ -257,7 +264,7 @@ func (c *Config) HTTPEndpoint() string {
 	if c.HTTPHost == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s:%d", c.HTTPHost, c.HTTPPort)
+	return net.JoinHostPort(c.HTTPHost, fmt.Sprintf("%d", c.HTTPPort))
 }
 
 // DefaultHTTPEndpoint returns the HTTP endpoint used by default.
@@ -272,7 +279,7 @@ func (c *Config) WSEndpoint() string {
 	if c.WSHost == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s:%d", c.WSHost, c.WSPort)
+	return net.JoinHostPort(c.WSHost, fmt.Sprintf("%d", c.WSPort))
 }
 
 // DefaultWSEndpoint returns the websocket endpoint used by default.

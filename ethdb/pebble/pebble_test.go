@@ -1,4 +1,4 @@
-// Copyright 2023 The go-ethereum Authors
+// Copyright 2019 The go-ethereum Authors
 // This file is part of the go-ethereum library.
 //
 // The go-ethereum library is free software: you can redistribute it and/or modify
@@ -14,11 +14,10 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
-//go:build (arm64 || amd64) && !openbsd
-
 package pebble
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/cockroachdb/pebble"
@@ -55,4 +54,27 @@ func BenchmarkPebbleDB(b *testing.B) {
 			db: db,
 		}
 	})
+}
+
+func TestPebbleLogData(t *testing.T) {
+	db, err := pebble.Open("", &pebble.Options{
+		FS: vfs.NewMem(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = db.Get(nil)
+	if !errors.Is(err, pebble.ErrNotFound) {
+		t.Fatal("Unknown database entry")
+	}
+
+	b := db.NewBatch()
+	b.LogData(nil, nil)
+	db.Apply(b, pebble.Sync)
+
+	_, _, err = db.Get(nil)
+	if !errors.Is(err, pebble.ErrNotFound) {
+		t.Fatal("Unknown database entry")
+	}
 }

@@ -18,7 +18,6 @@ package core
 
 import (
 	"math/big"
-	"runtime"
 	"testing"
 	"time"
 
@@ -29,13 +28,17 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 )
 
 // Tests that simple header verification works, for both good and bad blocks.
 func TestHeaderVerification(t *testing.T) {
+	testHeaderVerification(t, rawdb.HashScheme)
+	testHeaderVerification(t, rawdb.PathScheme)
+}
+
+func testHeaderVerification(t *testing.T, scheme string) {
 	// Create a simple chain to verify
 	var (
 		gspec        = &Genesis{Config: params.TestChainConfig}
@@ -46,8 +49,12 @@ func TestHeaderVerification(t *testing.T) {
 		headers[i] = block.Header()
 	}
 	// Run the header checker for blocks one-by-one, checking for both valid and invalid nonces
-	chain, _ := NewBlockChain(rawdb.NewMemoryDatabase(), nil, gspec, nil, ethash.NewFaker(), vm.Config{}, nil, nil)
+	options := DefaultConfig().WithStateScheme(scheme)
+	chain, err := NewBlockChain(rawdb.NewMemoryDatabase(), gspec, ethash.NewFaker(), options)
 	defer chain.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for i := 0; i < len(blocks); i++ {
 		for j, valid := range []bool{true, false} {
@@ -90,7 +97,6 @@ func testHeaderVerificationForMerging(t *testing.T, isClique bool) {
 		preBlocks  []*types.Block
 		postBlocks []*types.Block
 		engine     consensus.Engine
-		merger     = consensus.NewMerger(rawdb.NewMemoryDatabase())
 	)
 	if isClique {
 		var (
@@ -102,7 +108,7 @@ func testHeaderVerificationForMerging(t *testing.T, isClique bool) {
 		gspec = &Genesis{
 			Config:    &config,
 			ExtraData: make([]byte, 32+common.AddressLength+crypto.SignatureLength),
-			Alloc: map[common.Address]GenesisAccount{
+			Alloc: map[common.Address]types.Account{
 				addr: {Balance: big.NewInt(1)},
 			},
 			BaseFee:    big.NewInt(params.InitialBaseFee),
@@ -110,8 +116,12 @@ func testHeaderVerificationForMerging(t *testing.T, isClique bool) {
 		}
 		copy(gspec.ExtraData[32:], addr[:])
 
+		// chain_maker has no blockchain to retrieve the TTD from, setting to nil
+		// is a hack to signal it to generate pre-merge blocks
+		gspec.Config.TerminalTotalDifficulty = nil
 		td := 0
 		genDb, blocks, _ := GenerateChainWithGenesis(gspec, engine, 8, nil)
+
 		for i, block := range blocks {
 			header := block.Header()
 			if i > 0 {
@@ -142,7 +152,6 @@ func testHeaderVerificationForMerging(t *testing.T, isClique bool) {
 		}
 		preBlocks = blocks
 		gspec.Config.TerminalTotalDifficulty = big.NewInt(int64(td))
-		t.Logf("Set ttd to %v\n", gspec.Config.TerminalTotalDifficulty)
 		postBlocks, _ = GenerateChain(gspec.Config, preBlocks[len(preBlocks)-1], engine, genDb, 8, func(i int, gen *BlockGen) {
 			gen.SetPoS()
 		})
@@ -151,16 +160,17 @@ func testHeaderVerificationForMerging(t *testing.T, isClique bool) {
 	preHeaders := make([]*types.Header, len(preBlocks))
 	for i, block := range preBlocks {
 		preHeaders[i] = block.Header()
-		t.Logf("Pre-merge header: %d", block.NumberU64())
 	}
 	postHeaders := make([]*types.Header, len(postBlocks))
 	for i, block := range postBlocks {
 		postHeaders[i] = block.Header()
-		t.Logf("Post-merge header: %d", block.NumberU64())
 	}
 	// Run the header checker for blocks one-by-one, checking for both valid and invalid nonces
-	chain, _ := NewBlockChain(rawdb.NewMemoryDatabase(), nil, gspec, nil, engine, vm.Config{}, nil, nil)
+	chain, err := NewBlockChain(rawdb.NewMemoryDatabase(), gspec, engine, nil)
 	defer chain.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify the blocks before the merging
 	for i := 0; i < len(preBlocks); i++ {
@@ -182,11 +192,6 @@ func testHeaderVerificationForMerging(t *testing.T, isClique bool) {
 		}
 		chain.InsertChain(preBlocks[i : i+1])
 	}
-
-	// Make the transition
-	merger.ReachTTD()
-	merger.FinalizePoS()
-
 	// Verify the blocks after the merging
 	for i := 0; i < len(postBlocks); i++ {
 		_, results := engine.VerifyHeaders(chain, []*types.Header{postHeaders[i]})
@@ -205,7 +210,7 @@ func testHeaderVerificationForMerging(t *testing.T, isClique bool) {
 			t.Fatalf("post-block %d: unexpected result returned: %v", i, result)
 		case <-time.After(25 * time.Millisecond):
 		}
-		chain.InsertBlockWithoutSetHead(postBlocks[i])
+		chain.InsertBlockWithoutSetHead(postBlocks[i], false)
 	}
 
 	// Verify the blocks with pre-merge blocks and post-merge blocks
@@ -232,118 +237,6 @@ func testHeaderVerificationForMerging(t *testing.T, isClique bool) {
 	case result := <-results:
 		t.Fatalf("unexpected result returned: %v", result)
 	case <-time.After(25 * time.Millisecond):
-	}
-}
-
-// Tests that concurrent header verification works, for both good and bad blocks.
-func TestHeaderConcurrentVerification2(t *testing.T)  { testHeaderConcurrentVerification(t, 2) }
-func TestHeaderConcurrentVerification8(t *testing.T)  { testHeaderConcurrentVerification(t, 8) }
-func TestHeaderConcurrentVerification32(t *testing.T) { testHeaderConcurrentVerification(t, 32) }
-
-func testHeaderConcurrentVerification(t *testing.T, threads int) {
-	// Create a simple chain to verify
-	var (
-		gspec        = &Genesis{Config: params.TestChainConfig}
-		_, blocks, _ = GenerateChainWithGenesis(gspec, ethash.NewFaker(), 8, nil)
-	)
-	headers := make([]*types.Header, len(blocks))
-	for i, block := range blocks {
-		headers[i] = block.Header()
-	}
-	// Set the number of threads to verify on
-	old := runtime.GOMAXPROCS(threads)
-	defer runtime.GOMAXPROCS(old)
-
-	// Run the header checker for the entire block chain at once both for a valid and
-	// also an invalid chain (enough if one arbitrary block is invalid).
-	for i, valid := range []bool{true, false} {
-		var results <-chan error
-
-		if valid {
-			chain, _ := NewBlockChain(rawdb.NewMemoryDatabase(), nil, gspec, nil, ethash.NewFaker(), vm.Config{}, nil, nil)
-			_, results = chain.engine.VerifyHeaders(chain, headers)
-			chain.Stop()
-		} else {
-			chain, _ := NewBlockChain(rawdb.NewMemoryDatabase(), nil, gspec, nil, ethash.NewFakeFailer(uint64(len(headers)-1)), vm.Config{}, nil, nil)
-			_, results = chain.engine.VerifyHeaders(chain, headers)
-			chain.Stop()
-		}
-		// Wait for all the verification results
-		checks := make(map[int]error)
-		for j := 0; j < len(blocks); j++ {
-			select {
-			case result := <-results:
-				checks[j] = result
-
-			case <-time.After(time.Second):
-				t.Fatalf("test %d.%d: verification timeout", i, j)
-			}
-		}
-		// Check nonce check validity
-		for j := 0; j < len(blocks); j++ {
-			want := valid || (j < len(blocks)-2) // We chose the last-but-one nonce in the chain to fail
-			if (checks[j] == nil) != want {
-				t.Errorf("test %d.%d: validity mismatch: have %v, want %v", i, j, checks[j], want)
-			}
-			if !want {
-				// A few blocks after the first error may pass verification due to concurrent
-				// workers. We don't care about those in this test, just that the correct block
-				// errors out.
-				break
-			}
-		}
-		// Make sure no more data is returned
-		select {
-		case result := <-results:
-			t.Fatalf("test %d: unexpected result returned: %v", i, result)
-		case <-time.After(25 * time.Millisecond):
-		}
-	}
-}
-
-// Tests that aborting a header validation indeed prevents further checks from being
-// run, as well as checks that no left-over goroutines are leaked.
-func TestHeaderConcurrentAbortion2(t *testing.T)  { testHeaderConcurrentAbortion(t, 2) }
-func TestHeaderConcurrentAbortion8(t *testing.T)  { testHeaderConcurrentAbortion(t, 8) }
-func TestHeaderConcurrentAbortion32(t *testing.T) { testHeaderConcurrentAbortion(t, 32) }
-
-func testHeaderConcurrentAbortion(t *testing.T, threads int) {
-	// Create a simple chain to verify
-	var (
-		gspec        = &Genesis{Config: params.TestChainConfig}
-		_, blocks, _ = GenerateChainWithGenesis(gspec, ethash.NewFaker(), 1024, nil)
-	)
-	headers := make([]*types.Header, len(blocks))
-	for i, block := range blocks {
-		headers[i] = block.Header()
-	}
-	// Set the number of threads to verify on
-	old := runtime.GOMAXPROCS(threads)
-	defer runtime.GOMAXPROCS(old)
-
-	// Start the verifications and immediately abort
-	chain, _ := NewBlockChain(rawdb.NewMemoryDatabase(), nil, gspec, nil, ethash.NewFakeDelayer(time.Millisecond), vm.Config{}, nil, nil)
-	defer chain.Stop()
-
-	abort, results := chain.engine.VerifyHeaders(chain, headers)
-	close(abort)
-
-	// Deplete the results channel
-	verified := 0
-	for depleted := false; !depleted; {
-		select {
-		case result := <-results:
-			if result != nil {
-				t.Errorf("header %d: validation failed: %v", verified, result)
-			}
-			verified++
-		case <-time.After(50 * time.Millisecond):
-			depleted = true
-		}
-	}
-	// Check that abortion was honored by not processing too many POWs
-	if verified > 2*threads {
-		t.Errorf("verification count too large: have %d, want below %d", verified, 2*threads)
 	}
 }
 

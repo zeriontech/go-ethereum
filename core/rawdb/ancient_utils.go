@@ -18,6 +18,7 @@ package rawdb
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -50,36 +51,58 @@ func (info *freezerInfo) size() common.StorageSize {
 	return total
 }
 
+func inspect(name string, order map[string]freezerTableConfig, reader ethdb.AncientReader) (freezerInfo, error) {
+	info := freezerInfo{name: name}
+	for t := range order {
+		size, err := reader.AncientSize(t)
+		if err != nil {
+			return freezerInfo{}, err
+		}
+		info.sizes = append(info.sizes, tableSize{name: t, size: common.StorageSize(size)})
+	}
+	// Retrieve the number of last stored item
+	ancients, err := reader.Ancients()
+	if err != nil {
+		return freezerInfo{}, err
+	}
+	info.head = ancients - 1
+
+	// Retrieve the number of first stored item
+	tail, err := reader.Tail()
+	if err != nil {
+		return freezerInfo{}, err
+	}
+	info.tail = tail
+	return info, nil
+}
+
 // inspectFreezers inspects all freezers registered in the system.
 func inspectFreezers(db ethdb.Database) ([]freezerInfo, error) {
 	var infos []freezerInfo
 	for _, freezer := range freezers {
 		switch freezer {
-		case chainFreezerName:
-			// Chain ancient store is a bit special. It's always opened along
-			// with the key-value store, inspect the chain store directly.
-			info := freezerInfo{name: freezer}
-			// Retrieve storage size of every contained table.
-			for table := range chainFreezerNoSnappy {
-				size, err := db.AncientSize(table)
-				if err != nil {
-					return nil, err
-				}
-				info.sizes = append(info.sizes, tableSize{name: table, size: common.StorageSize(size)})
-			}
-			// Retrieve the number of last stored item
-			ancients, err := db.Ancients()
+		case ChainFreezerName:
+			info, err := inspect(ChainFreezerName, chainFreezerTableConfigs, db)
 			if err != nil {
 				return nil, err
 			}
-			info.head = ancients - 1
+			infos = append(infos, info)
 
-			// Retrieve the number of first stored item
-			tail, err := db.Tail()
+		case MerkleStateFreezerName, VerkleStateFreezerName:
+			datadir, err := db.AncientDatadir()
 			if err != nil {
 				return nil, err
 			}
-			info.tail = tail
+			f, err := NewStateFreezer(datadir, freezer == VerkleStateFreezerName, true)
+			if err != nil {
+				continue // might be possible the state freezer is not existent
+			}
+			defer f.Close()
+
+			info, err := inspect(freezer, stateFreezerTableConfigs, f)
+			if err != nil {
+				return nil, err
+			}
 			infos = append(infos, info)
 
 		default:
@@ -96,11 +119,13 @@ func inspectFreezers(db ethdb.Database) ([]freezerInfo, error) {
 func InspectFreezerTable(ancient string, freezerName string, tableName string, start, end int64) error {
 	var (
 		path   string
-		tables map[string]bool
+		tables map[string]freezerTableConfig
 	)
 	switch freezerName {
-	case chainFreezerName:
-		path, tables = resolveChainFreezerDir(ancient), chainFreezerNoSnappy
+	case ChainFreezerName:
+		path, tables = resolveChainFreezerDir(ancient), chainFreezerTableConfigs
+	case MerkleStateFreezerName, VerkleStateFreezerName:
+		path, tables = filepath.Join(ancient, freezerName), stateFreezerTableConfigs
 	default:
 		return fmt.Errorf("unknown freezer, supported ones: %v", freezers)
 	}

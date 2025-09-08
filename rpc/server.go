@@ -18,7 +18,9 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 
@@ -46,16 +48,22 @@ type Server struct {
 	services serviceRegistry
 	idgen    func() ID
 
-	mutex  sync.Mutex
-	codecs map[ServerCodec]struct{}
-	run    atomic.Bool
+	mutex              sync.Mutex
+	codecs             map[ServerCodec]struct{}
+	run                atomic.Bool
+	batchItemLimit     int
+	batchResponseLimit int
+	httpBodyLimit      int
+	wsReadLimit        int64
 }
 
 // NewServer creates a new server instance with no registered handlers.
 func NewServer() *Server {
 	server := &Server{
-		idgen:  randomIDGenerator(),
-		codecs: make(map[ServerCodec]struct{}),
+		idgen:         randomIDGenerator(),
+		codecs:        make(map[ServerCodec]struct{}),
+		httpBodyLimit: defaultBodyLimit,
+		wsReadLimit:   wsDefaultReadLimit,
 	}
 	server.run.Store(true)
 	// Register the default service providing meta information about the RPC service such
@@ -65,8 +73,33 @@ func NewServer() *Server {
 	return server
 }
 
+// SetBatchLimits sets limits applied to batch requests. There are two limits: 'itemLimit'
+// is the maximum number of items in a batch. 'maxResponseSize' is the maximum number of
+// response bytes across all requests in a batch.
+//
+// This method should be called before processing any requests via ServeCodec, ServeHTTP,
+// ServeListener etc.
+func (s *Server) SetBatchLimits(itemLimit, maxResponseSize int) {
+	s.batchItemLimit = itemLimit
+	s.batchResponseLimit = maxResponseSize
+}
+
+// SetHTTPBodyLimit sets the size limit for HTTP requests.
+//
+// This method should be called before processing any requests via ServeHTTP.
+func (s *Server) SetHTTPBodyLimit(limit int) {
+	s.httpBodyLimit = limit
+}
+
+// SetWebsocketReadLimit sets the limit for max message size for Websocket requests.
+//
+// This method should be called before processing any requests via Websocket server.
+func (s *Server) SetWebsocketReadLimit(limit int64) {
+	s.wsReadLimit = limit
+}
+
 // RegisterName creates a service for the given receiver type under the given name. When no
-// methods on the given receiver match the criteria to be either a RPC method or a
+// methods on the given receiver match the criteria to be either an RPC method or a
 // subscription an error is returned. Otherwise a new service is created and added to the
 // service collection this server provides to clients.
 func (s *Server) RegisterName(name string, receiver interface{}) error {
@@ -86,7 +119,12 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 	}
 	defer s.untrackCodec(codec)
 
-	c := initClient(codec, s.idgen, &s.services)
+	cfg := &clientConfig{
+		idgen:              s.idgen,
+		batchItemLimit:     s.batchItemLimit,
+		batchResponseLimit: s.batchResponseLimit,
+	}
+	c := initClient(codec, &s.services, cfg)
 	<-codec.closed()
 	c.Close()
 }
@@ -118,14 +156,14 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.batchItemLimit, s.batchResponseLimit)
 	h.allowSubscribe = false
 	defer h.close(io.EOF, nil)
 
 	reqs, batch, err := codec.readBatch()
 	if err != nil {
-		if err != io.EOF {
-			resp := errorMessage(&invalidMessageError{"parse error"})
+		if msg := messageForReadError(err); msg != "" {
+			resp := errorMessage(&invalidMessageError{msg})
 			codec.writeJSON(ctx, resp, true)
 		}
 		return
@@ -135,6 +173,20 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 	} else {
 		h.handleMsg(reqs[0])
 	}
+}
+
+func messageForReadError(err error) string {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "read timeout"
+		} else {
+			return "read error"
+		}
+	} else if err != io.EOF {
+		return "parse error"
+	}
+	return ""
 }
 
 // Stop stops reading new requests, waits for stopPendingRequestTimeout to allow pending
