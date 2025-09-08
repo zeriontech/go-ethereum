@@ -241,41 +241,7 @@ func (arguments Arguments) UnpackValues(data []byte) ([]any, error) {
 	return retval, nil
 }
 
-// UnpackValues can be used to unpack ABI-encoded hexdata according to the ABI-specification,
-// without supplying a struct to unpack into. Instead, this method returns a list containing the
-// values converted to strings. An atomic argument will be a list with one element.
-func (arguments Arguments) UnpackValuesAsStrings(data []byte) ([]interface{}, error) {
-	nonIndexedArgs := arguments.NonIndexed()
-	retval := make([]interface{}, 0, len(nonIndexedArgs))
-	virtualArgs := 0
-	for index, arg := range nonIndexedArgs {
-		marshalledValue, err := toString((index+virtualArgs)*32, arg.Type, data)
-		if err != nil {
-			return nil, err
-		}
-		if arg.Type.T == ArrayTy && !isDynamicType(arg.Type) {
-			// If we have a static array, like [3]uint256, these are coded as
-			// just like uint256,uint256,uint256.
-			// This means that we need to add two 'virtual' arguments when
-			// we count the index from now on.
-			//
-			// Array values nested multiple levels deep are also encoded inline:
-			// [2][3]uint256: uint256,uint256,uint256,uint256,uint256,uint256
-			//
-			// Calculate the full array size to get the correct offset for the next argument.
-			// Decrement it by 1, as the normal index increment is still applied.
-			virtualArgs += getTypeSize(arg.Type)/32 - 1
-		} else if arg.Type.T == TupleTy && !isDynamicType(arg.Type) {
-			// If we have a static tuple, like (uint256, bool, uint256), these are
-			// coded as just like uint256,bool,uint256
-			virtualArgs += getTypeSize(arg.Type)/32 - 1
-		}
-		retval = append(retval, marshalledValue)
-	}
-	return retval, nil
-}
-
-// UnpackValues can be used to unpack ABI-encoded hexdata according to the ABI-specification,
+// UnpackValuesAsStrings can be used to unpack ABI-encoded hexdata according to the ABI-specification,
 // without supplying a struct to unpack into. Instead, this method returns a list containing the
 // values converted to strings. An atomic argument will be a list with one element.
 func (arguments Arguments) UnpackValuesAsStrings(data []byte) ([]interface{}, error) {

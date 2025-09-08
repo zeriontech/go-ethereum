@@ -696,6 +696,14 @@ func (ec *Client) SendTransaction(ctx context.Context, tx *types.Transaction) er
 	return ec.c.CallContext(ctx, nil, "eth_sendRawTransaction", hexutil.Encode(data))
 }
 
+// SendRawTransaction injects a raw transaction into the pending pool for execution.
+//
+// If the transaction was a contract creation use the TransactionReceipt method to get the
+// contract address after the transaction has been mined.
+func (ec *Client) SendRawTransaction(ctx context.Context, rawTx string) error {
+	return ec.c.CallContext(ctx, nil, "eth_sendRawTransaction", rawTx)
+}
+
 // RevertErrorData returns the 'revert reason' data of a contract call.
 //
 // This can be used with CallContract and EstimateGas, and only when the server is Geth.
@@ -711,13 +719,6 @@ func RevertErrorData(err error) ([]byte, bool) {
 		}
 	}
 	return nil, false
-
-// SendRawTransaction injects a raw transaction into the pending pool for execution.
-//
-// If the transaction was a contract creation use the TransactionReceipt method to get the
-// contract address after the transaction has been mined.
-func (ec *Client) SendRawTransaction(ctx context.Context, rawTx string) error {
-	return ec.c.CallContext(ctx, nil, "eth_sendRawTransaction", rawTx)
 }
 
 func toBlockNumArg(number *big.Int) string {
