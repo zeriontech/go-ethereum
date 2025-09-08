@@ -711,6 +711,13 @@ func RevertErrorData(err error) ([]byte, bool) {
 		}
 	}
 	return nil, false
+
+// SendRawTransaction injects a raw transaction into the pending pool for execution.
+//
+// If the transaction was a contract creation use the TransactionReceipt method to get the
+// contract address after the transaction has been mined.
+func (ec *Client) SendRawTransaction(ctx context.Context, rawTx string) error {
+	return ec.c.CallContext(ctx, nil, "eth_sendRawTransaction", rawTx)
 }
 
 func toBlockNumArg(number *big.Int) string {
