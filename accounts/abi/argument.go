@@ -241,7 +241,7 @@ func (arguments Arguments) UnpackValues(data []byte) ([]any, error) {
 	return retval, nil
 }
 
-// UnpackValues can be used to unpack ABI-encoded hexdata according to the ABI-specification,
+// UnpackValuesAsStrings can be used to unpack ABI-encoded hexdata according to the ABI-specification,
 // without supplying a struct to unpack into. Instead, this method returns a list containing the
 // values converted to strings. An atomic argument will be a list with one element.
 func (arguments Arguments) UnpackValuesAsStrings(data []byte) ([]interface{}, error) {
